@@ -1,7 +1,7 @@
 name: nxv
 channels:
   - conda-forge
-  - mantid/label/nightly
+  - mantid
 dependencies:
   - python
   - numpy
@@ -14,3 +14,5 @@ dependencies:
   - pytest
   - mantidworkbench
   - scikit-learn
+  - scikit-image
+## needs to install pyqtdarktheme, with pip : pip install pyqtdarktheme
