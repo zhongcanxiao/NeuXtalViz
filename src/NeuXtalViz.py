@@ -7,10 +7,13 @@ os.environ['QT_API'] = 'pyqt5'
 from qtpy.QtWidgets import (QApplication,
                             QMainWindow,
                             QWidget, 
+                            QTabWidget, 
+                            QPushButton, 
                             QAction,
                             QStackedWidget,
                             QVBoxLayout,
                             QMessageBox)
+from PyQt5 import Qt
 
 from qtpy.QtGui import QIcon
 
@@ -71,6 +74,7 @@ class NeuXtalViz(QMainWindow):
 
         layout = QVBoxLayout(main_window)
 
+############### stack view###############
         app_stack = QStackedWidget()
 
         app_menu = self.menuBar().addMenu('Applications')
@@ -79,39 +83,38 @@ class NeuXtalViz(QMainWindow):
         cs_action.triggered.connect(lambda: app_stack.setCurrentIndex(0))
         app_menu.addAction(cs_action)
 
-        s_action = QAction('Sample', self)
-        s_action.triggered.connect(lambda: app_stack.setCurrentIndex(1))
-        app_menu.addAction(s_action)
-
-        m_action = QAction('Modulation', self)
-        m_action.triggered.connect(lambda: app_stack.setCurrentIndex(2))
-        app_menu.addAction(m_action)
-
-        vs_action = QAction('Volume Slicer', self)
-        vs_action.triggered.connect(lambda: app_stack.setCurrentIndex(3))
-        app_menu.addAction(vs_action)
-
         cs_view = CrystalStructureView(self)
         cs_model = CrystalStructureModel()
         self.cs = CrystalStructure(cs_view, cs_model)
         app_stack.addWidget(cs_view)
+
+        s_action = QAction('Sample', self)
+        s_action.triggered.connect(lambda: app_stack.setCurrentIndex(1))
+        app_menu.addAction(s_action)
 
         s_view = SampleView(self)
         s_model = SampleModel()
         self.s = Sample(s_view, s_model)
         app_stack.addWidget(s_view)
 
+        m_action = QAction('Modulation', self)
+        m_action.triggered.connect(lambda: app_stack.setCurrentIndex(2))
+        app_menu.addAction(m_action)
+
         m_view = ModulationView(self)
         m_model = ModulationModel()
         self.m = Modulation(m_view, m_model)
         app_stack.addWidget(m_view)
+
+        vs_action = QAction('Volume Slicer', self)
+        vs_action.triggered.connect(lambda: app_stack.setCurrentIndex(3))
+        app_menu.addAction(vs_action)
 
         vs_view = VolumeSlicerView(self)
         vs_model = VolumeSlicerModel()
         self.vs = VolumeSlicer(vs_view, vs_model)
         app_stack.addWidget(vs_view)
 
-        layout.addWidget(app_stack)
 
         ub_action = QAction('UB', self)
         ub_action.triggered.connect(lambda: app_stack.setCurrentIndex(4))
@@ -131,8 +134,20 @@ class NeuXtalViz(QMainWindow):
         self.ep = Experiment(ep_view, ep_model)
         app_stack.addWidget(ep_view)
 
-        layout.addWidget(app_stack)
 
+        # Create a list of buttons that act like tabs
+        buttons = Qt.QHBoxLayout()
+        buttons.addItem(Qt.QSpacerItem(0, 0, Qt.QSizePolicy.Expanding, Qt.QSizePolicy.Minimum))
+
+        menu_items = [action.text() for action in app_menu.actions()]
+        for i in range(app_stack.count()):
+            button = QPushButton(f"{menu_items[i]}")
+            button.clicked.connect(lambda checked, index=i: app_stack.setCurrentIndex(index))
+            buttons.addWidget( button)
+
+        layout.addLayout(buttons)
+        layout.addWidget(app_stack)
+       
         # self.showMaximized()
 
 def handle_exception(exc_type, exc_value, exc_traceback):
