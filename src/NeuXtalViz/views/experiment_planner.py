@@ -104,6 +104,20 @@ class ExperimentView(NeuXtalVizWidget):
         self.goniometer_table.setRowCount(0)
         self.goniometer_table.setColumnCount(3)
 
+
+        self.peak_table = QTableWidget()
+
+        self.peak_table.setRowCount(5)
+        self.peak_table.setColumnCount(4)
+
+        labels = ['Peak', 'H', 'K', 'L']
+
+        self.peak_table.horizontalHeader().setStretchLastSection(True)
+        self.peak_table.horizontalHeader().setSectionResizeMode(resize)
+        self.peak_table.setHorizontalHeaderLabels(labels)
+
+
+
         labels = ['Motor', 'Min', 'Max']
 
         self.goniometer_table.horizontalHeader().setStretchLastSection(True)
@@ -144,6 +158,7 @@ class ExperimentView(NeuXtalVizWidget):
         result_layout = QVBoxLayout()
 
         result_layout.addWidget(self.goniometer_table)
+        result_layout.addWidget(self.peak_table)
         result_layout.addWidget(self.motor_table)
 
         self.canvas = FigureCanvas(Figure(tight_layout=True))
