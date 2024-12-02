@@ -15,4 +15,10 @@ dependencies:
   - mantidworkbench
   - scikit-learn
   - scikit-image
+  - astropy
+  - dill
+  - psutil
+  - multiprocess
+  - pip:
+    - pyqtdarktheme
 ## needs to install pyqtdarktheme, with pip : pip install pyqtdarktheme

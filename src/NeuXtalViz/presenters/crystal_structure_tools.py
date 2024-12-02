@@ -132,52 +132,82 @@ class CrystalStructure(NeuXtalVizPresenter):
 
     def calculate_F2(self):
 
+        worker = self.view.worker(self.calculate_F2_process)
+        worker.connect_result(self.calculate_F2_complete)
+        worker.connect_finished(self.update_complete)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def calculate_F2_complete(self, result):
+
+        if result is not None:
+
+            self.view.set_factors(*result)
+
+    def calculate_F2_process(self, progress):
+
         d_min = self.view.get_minimum_d_spacing()
 
         params = self.view.get_lattice_constants()
 
         if params is not None:
 
-            self.update_processing()
+            progress('Processing...', 1)
 
-            self.update_processing('Calculating factors...', 10)
+            progress('Calculating factors...', 10)
 
             if d_min is None:
                 d_min = min(params[0:2])*0.2
 
             hkls, ds, F2s = self.model.generate_F2(d_min)
 
-            self.update_processing('Factors calculated...', 99)
+            progress('Factors calculated...', 99)
 
-            self.view.set_factors(hkls, ds, F2s)
+            progress('Factors calculated!', 100)
 
-            self.update_complete('Factors calculated!')
+            return hkls, ds, F2s
 
         else:
 
-            self.update_invalid()
+            progress('Invalid parameters.', 0)
 
     def calculate_hkl(self):
+
+        worker = self.view.worker(self.calculate_hkl_process)
+        worker.connect_result(self.calculate_hkl_complete)
+        worker.connect_finished(self.update_complete)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def calculate_hkl_complete(self, result):
+
+        if result is not None:
+
+            self.view.set_equivalents(*result)
+
+    def calculate_hkl_process(self, progress):
 
         hkl = self.view.get_hkl()
 
         if hkl is not None:
 
-            self.update_processing()
+            progress('Processing...', 1)
 
-            self.update_processing('Calculating equivalents...', 10)
+            progress('Calculating equivalents...', 10)
 
             hkls, d, F2 = self.model.calculate_F2(*hkl)
 
-            self.update_processing('Equivalents calculated...', 99)
+            progress('Equivalents calculated...', 99)
 
-            self.view.set_equivalents(hkls, d, F2)
+            progress('Equivalents calculated!', 100)
 
-            self.update_complete('Equivalents calculated!')
+            return hkls, d, F2
 
         else:
 
-            self.update_invalid()
+            progress('Invalid parameters.', 0)
 
     def select_isotope(self):
 

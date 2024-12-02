@@ -4,7 +4,6 @@ from qtpy.QtWidgets import (QWidget,
                             QPushButton,
                             QLabel,
                             QTabWidget,
-                            QCheckBox,
                             QComboBox,
                             QLineEdit,
                             QSlider,
@@ -12,6 +11,7 @@ from qtpy.QtWidgets import (QWidget,
 
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtCore import Qt
+from PyQt5.QtCore import pyqtSignal
 
 import numpy as np
 import pyvista as pv
@@ -28,7 +28,14 @@ cmaps = {'Sequential': 'viridis',
          'Diverging': 'bwr',
          'Rainbow': 'turbo'}
 
+opacities = {'Linear': {'Low->High' : 'linear', 'High->Low' : 'linear_r'},
+             'Geometric': {'Low->High' : 'geom', 'High->Low' : 'geom_r'},
+             'Sigmoid': {'Low->High' : 'sigmoid', 'High->Low' : 'sigmoid_r'}}
+
 class VolumeSlicerView(NeuXtalVizWidget):
+
+    slice_ready = pyqtSignal()
+    cut_ready = pyqtSignal()
 
     def __init__(self, parent=None):
 
@@ -54,11 +61,27 @@ class VolumeSlicerView(NeuXtalVizWidget):
         cut_params_layout = QHBoxLayout()
         draw_layout = QHBoxLayout()
 
+        self.vol_scale_combo = QComboBox(self)
+        self.vol_scale_combo.addItem('Linear')
+        self.vol_scale_combo.addItem('Log')
+        self.vol_scale_combo.setCurrentIndex(0)
+
+        self.opacity_combo = QComboBox(self)
+        self.opacity_combo.addItem('Linear')
+        self.opacity_combo.addItem('Geometric')
+        self.opacity_combo.addItem('Sigmoid')
+        self.opacity_combo.setCurrentIndex(0)
+
+        self.range_combo = QComboBox(self)
+        self.range_combo.addItem('Low->High')
+        self.range_combo.addItem('High->Low')
+        self.range_combo.setCurrentIndex(0)
+
         self.clim_combo = QComboBox(self)
         self.clim_combo.addItem('Min/Max')
         self.clim_combo.addItem('μ±3×σ')
         self.clim_combo.addItem('Q₃/Q₁±1.5×IQR')
-        self.clim_combo.setCurrentIndex(1)
+        self.clim_combo.setCurrentIndex(2)
 
         self.cbar_combo = QComboBox(self)
         self.cbar_combo.addItem('Sequential')
@@ -67,9 +90,10 @@ class VolumeSlicerView(NeuXtalVizWidget):
         self.cbar_combo.addItem('Diverging')
 
         self.load_NXS_button = QPushButton('Load NXS', self)
-        self.slice_button = QPushButton('Slice Plane', self)
-        self.cut_button = QPushButton('Cut Line', self)
 
+        draw_layout.addWidget(self.vol_scale_combo)
+        draw_layout.addWidget(self.opacity_combo)
+        draw_layout.addWidget(self.range_combo)
         draw_layout.addWidget(self.clim_combo)
         draw_layout.addWidget(self.cbar_combo)
         draw_layout.addWidget(self.load_NXS_button)
@@ -125,26 +149,22 @@ class VolumeSlicerView(NeuXtalVizWidget):
         self.min_slider.setValue(0)
         self.max_slider.setValue(100)
 
+        self.min_slider.setTracking(False)
+        self.max_slider.setTracking(False)
+
         bar_layout.addWidget(self.min_slider)
         bar_layout.addWidget(self.max_slider)
 
         slider_layout.addLayout(bar_layout)
 
-        self.slice_slider = QSlider(Qt.Horizontal)
-        self.cut_slider = QSlider(Qt.Horizontal)
-
-        slice_params_layout.addWidget(self.slice_button)
         slice_params_layout.addWidget(self.slice_combo)
-        slice_params_layout.addWidget(self.slice_slider)
         slice_params_layout.addWidget(slice_label)
         slice_params_layout.addWidget(self.slice_line)
         slice_params_layout.addWidget(slice_thickness_label)
         slice_params_layout.addWidget(self.slice_thickness_line)
         slice_params_layout.addWidget(self.slice_scale_combo)
 
-        cut_params_layout.addWidget(self.cut_button)
         cut_params_layout.addWidget(self.cut_combo)
-        cut_params_layout.addWidget(self.cut_slider)
         cut_params_layout.addWidget(cut_label)
         cut_params_layout.addWidget(self.cut_line)
         cut_params_layout.addWidget(cut_thickness_label)
@@ -154,7 +174,8 @@ class VolumeSlicerView(NeuXtalVizWidget):
         plots_layout.addLayout(draw_layout)
 
         self.canvas_slice = FigureCanvas(Figure(constrained_layout=True))
-        self.canvas_cut = FigureCanvas(Figure(constrained_layout=True))
+        self.canvas_cut = FigureCanvas(Figure(constrained_layout=True,
+                                              figsize=(6.4,3.2)))
 
         image_layout = QHBoxLayout()
         line_layout = QHBoxLayout()
@@ -188,13 +209,57 @@ class VolumeSlicerView(NeuXtalVizWidget):
 
         slice_tab.setLayout(plots_layout)
 
-    def connect_slice_slider(self, update_slice):
+    def connect_vol_scale_combo(self, update_vol):
 
-        self.slice_slider.valueChanged.connect(update_slice)
+        self.vol_scale_combo.currentIndexChanged.connect(update_vol)
 
-    def connect_cut_slider(self, update_cut):
+    def connect_opacity_combo(self, update_opacity):
 
-        self.cut_slider.valueChanged.connect(update_cut)
+        self.opacity_combo.currentIndexChanged.connect(update_opacity)
+
+    def connect_range_comboo(self, update_range):
+
+        self.range_combo.currentIndexChanged.connect(update_range)
+
+    def connect_clim_combo(self, update_clim):
+
+        self.clim_combo.currentIndexChanged.connect(update_clim)
+
+    def connect_cbar_combo(self, update_cbar):
+
+        self.cbar_combo.currentIndexChanged.connect(update_cbar)
+
+    def connect_slice_thickness_line(self, update_slice):
+
+        self.slice_thickness_line.editingFinished.connect(update_slice)
+
+    def connect_cut_thickness_line(self, update_cut):
+
+        self.cut_thickness_line.editingFinished.connect(update_cut)
+
+    def connect_slice_line(self, update_slice):
+
+        self.slice_line.editingFinished.connect(update_slice)
+
+    def connect_cut_line(self, update_cut):
+
+        self.cut_line.editingFinished.connect(update_cut)
+
+    def connect_slice_scale_combo(self, update_slice):
+
+        self.slice_scale_combo.currentIndexChanged.connect(update_slice)
+
+    def connect_cut_scale_combo(self, update_cut):
+
+        self.cut_scale_combo.currentIndexChanged.connect(update_cut)
+
+    def connect_slice_combo(self, update_slice):
+
+        self.slice_combo.currentIndexChanged.connect(update_slice)
+
+    def connect_cut_combo(self, update_cut):
+
+        self.cut_combo.currentIndexChanged.connect(update_cut)
 
     def connect_min_slider(self, update_colorbar):
 
@@ -203,54 +268,6 @@ class VolumeSlicerView(NeuXtalVizWidget):
     def connect_max_slider(self, update_colorbar):
 
         self.max_slider.valueChanged.connect(update_colorbar)
-
-    def update_slice_limits(self, n, delta, start):
-
-        val = n // 2
-
-        self.slice_slider.blockSignals(True)
-        self.slice_slider.setRange(0, n-1)
-        self.slice_slider.setValue(val)
-        self.slice_slider.setSingleStep(1)
-        self.slice_slider.blockSignals(False)
-
-        self.set_slice_thickness(round(delta, 4))
-        self.slice_start = start
-        self.slice_step = delta
-
-    def update_cut_limits(self, n, delta, start):
-
-        val = n // 2
-
-        self.cut_slider.blockSignals(True)
-        self.cut_slider.setRange(0, n-1)
-        self.cut_slider.setValue(val)
-        self.cut_slider.setSingleStep(1)
-        self.cut_slider.blockSignals(False)
-
-        self.set_cut_thickness(round(delta, 4))
-        self.cut_start = start
-        self.cut_step = delta
-
-    def update_slice_value(self):
-
-        val = self.slice_slider.value()
-        thick = self.slice_step
-
-        if val is not None:
-
-            val = self.slice_start+val*thick
-            self.set_slice_value(val)
-
-    def update_cut_value(self):
-
-        val = self.cut_slider.value()
-        thick = self.cut_step
-
-        if val is not None:
-
-            val = self.cut_start+val*thick
-            self.set_cut_value(val)
 
     def update_colorbar_min(self):
 
@@ -300,20 +317,15 @@ class VolumeSlicerView(NeuXtalVizWidget):
 
         self.load_NXS_button.clicked.connect(load_NXS)
 
-    def connect_slice(self, slice_plane):
-
-        self.slice_button.clicked.connect(slice_plane)
-
-    def connect_cut(self, cut_line):
-
-        self.cut_button.clicked.connect(cut_line)
-
     def load_NXS_file_dialog(self):
 
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
 
-        filename, _ = QFileDialog.getOpenFileName(self,
+        file_dialog = QFileDialog()
+        file_dialog.setFileMode(QFileDialog.AnyFile)
+
+        filename, _ = file_dialog.getOpenFileName(self,
                                                   'Load NXS file',
                                                   '',
                                                   'NXS files (*.nxs)',
@@ -321,11 +333,19 @@ class VolumeSlicerView(NeuXtalVizWidget):
 
         return filename
 
-    def add_histo(self, histo_dict, normal, origin):
+    def add_histo(self, histo_dict, normal, norm, value):
+
+        opacity = opacities[self.get_opacity()][self.get_range()]
+
+        log_scale = True if self.get_vol_scale() == 'Log' else False
 
         cmap = cmaps[self.get_colormap()]
 
         self.clear_scene()
+        
+        self.norm = np.array(norm).copy()
+        origin = norm
+        origin[origin.index(1)] = value
 
         signal = histo_dict['signal']
         labels = histo_dict['labels']
@@ -367,19 +387,21 @@ class VolumeSlicerView(NeuXtalVizWidget):
         clim = [np.nanmin(signal), np.nanmax(signal)]
 
         self.clip = self.plotter.add_volume_clip_plane(grid,
-                                                       opacity='linear',
-                                                       log_scale=False,
+                                                       opacity=opacity,
+                                                       log_scale=log_scale,
                                                        clim=clim,
                                                        normal=normal,
                                                        origin=origin,
-                                                       origin_translation=True,
+                                                       origin_translation=False,
                                                        show_scalar_bar=False,
-                                                       normal_rotation=True,
-                                                       mapper='smart',
+                                                       normal_rotation=False,
                                                        cmap=cmap,
                                                        user_matrix=b)
 
         prop = self.clip.GetOutlineProperty()
+        prop.SetOpacity(0)
+
+        prop = self.clip.GetEdgesProperty()
         prop.SetOpacity(0)
 
         actor = self.plotter.show_grid(xtitle=labels[0],
@@ -411,6 +433,37 @@ class VolumeSlicerView(NeuXtalVizWidget):
 
         self.reset_scene()
 
+        self.clip.AddObserver('InteractionEvent', self.interaction_callback)
+
+        self.P_inv = np.linalg.inv(P)
+
+    def interaction_callback(self, caller, event):
+
+        orig = caller.GetOrigin()
+        #norm = caller.GetNormal()
+
+        #norm /= np.linalg.norm(norm)
+        #norm = self.norm
+
+        ind = np.array(self.norm).tolist().index(1)
+
+        value = np.dot(self.P_inv, orig)[ind]
+
+        self.slice_line.blockSignals(True)
+        self.set_slice_value(value)
+        self.slice_line.blockSignals(False)
+
+        self.slice_ready.emit()
+
+    def connect_slice_ready(self, reslice):
+
+        self.slice_ready.connect(reslice)
+
+    def __format_axis_coord(self, x, y):
+
+        x, y, _ = np.dot(self.T_inv, [x, y, 1])
+        return 'x={:.3f}, y={:.3f}'.format(x, y)
+
     def add_slice(self, slice_dict):
 
         self.max_slider.blockSignals(True)
@@ -436,10 +489,14 @@ class VolumeSlicerView(NeuXtalVizWidget):
         vmax = np.nanmax(signal)
 
         if np.isclose(vmax, vmin) or not np.isfinite([vmin, vmax]).all():
-            vmin, vmax = (0.1, 1) if scale == 'log' else (0, 1)         
+            vmin, vmax = (0.1, 1) if scale == 'log' else (0, 1)
 
         T = slice_dict['transform']
         aspect = slice_dict['aspect']
+
+        self.T_inv = np.linalg.inv(T)
+
+        self.ax_slice.format_coord = self.__format_axis_coord
 
         transform = Affine2D(T)+self.ax_slice.transData
         self.transform = transform
@@ -504,15 +561,17 @@ class VolumeSlicerView(NeuXtalVizWidget):
         ylim = self.ylim
 
         thick = self.get_cut_thickness()
-        
+
         delta = 0 if thick is None else thick/2
 
         if line_cut == 'Axis 2':
             l0 = [val-delta, val-delta], ylim
             l1 = [val+delta, val+delta], ylim
+            direction = 'vertical'
         else:
             l0 = xlim, [val-delta, val-delta]
             l1 = xlim, [val+delta, val+delta]
+            direction = 'horizontal'
 
         self.ax_slice.plot(*l0, 'w--', linewidth=1, transform=self.transform)
         self.ax_slice.plot(*l1, 'w--', linewidth=1, transform=self.transform)
@@ -532,6 +591,85 @@ class VolumeSlicerView(NeuXtalVizWidget):
 
         self.canvas_slice.draw_idle()
         self.canvas_slice.flush_events()
+
+        self.linecut = {'is_dragging': False,
+                        'line_cut': (xlim, ylim, delta, direction)}
+
+        self.fig_slice.canvas.mpl_connect('button_press_event',
+                                          self.on_press)
+
+        self.fig_slice.canvas.mpl_connect('button_release_event',
+                                          self.on_release)
+
+        self.fig_slice.canvas.mpl_connect('motion_notify_event',
+                                          self.on_motion)
+
+    def on_press(self, event):
+
+        if event.inaxes == self.ax_slice and \
+            self.fig_slice.canvas.toolbar.mode == '':
+
+            self.linecut['is_dragging'] = True
+
+    def on_release(self, event):
+
+        self.linecut['is_dragging'] = False
+
+        self.cut_ready.emit()
+
+    def connect_cut_ready(self, recut):
+
+        self.cut_ready.connect(recut)
+
+    def on_motion(self, event):
+
+        if self.linecut['is_dragging'] and event.inaxes == self.ax_slice:
+
+            lines = self.ax_slice.get_lines()
+            for line in lines:
+                line.remove()
+
+            xlim, ylim, delta, direction = self.linecut['line_cut']
+
+            x, y, _ = np.dot(self.T_inv, [event.xdata, event.ydata, 1])
+
+            self.cut_line.blockSignals(True)
+
+            if direction == 'vertical':
+                l0 = [x-delta, x-delta], ylim
+                l1 = [x+delta, x+delta], ylim
+                self.set_cut_value(x)
+            else:
+                l0 = xlim, [y-delta, y-delta]
+                l1 = xlim, [y+delta, y+delta]
+                self.set_cut_value(y)
+
+            self.cut_line.blockSignals(False)
+
+            self.ax_slice.plot(*l0,
+                               'w--',
+                               linewidth=1,
+                               transform=self.transform)
+
+            self.ax_slice.plot(*l1,
+                               'w--',
+                               linewidth=1,
+                               transform=self.transform)
+
+            self.canvas_slice.draw_idle()
+            self.canvas_slice.flush_events()
+
+    def get_vol_scale(self):
+
+        return self.vol_scale_combo.currentText()
+
+    def get_opacity(self):
+
+        return self.opacity_combo.currentText()
+
+    def get_range(self):
+
+        return self.range_combo.currentText()
 
     def get_colormap(self):
 
@@ -575,7 +713,7 @@ class VolumeSlicerView(NeuXtalVizWidget):
 
     def set_cut_thickness(self, val):
 
-         self.cut_thickness_line.setText(str(val))
+        self.cut_thickness_line.setText(str(val))
 
     def get_clim_clip_type(self):
 

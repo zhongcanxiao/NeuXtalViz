@@ -8,20 +8,46 @@ class VolumeSlicer(NeuXtalVizPresenter):
 
         self.view.connect_load_NXS(self.load_NXS)
 
-        self.view.connect_slice(self.redraw_data)
-        self.view.connect_cut(self.redraw_data)
+        self.view.connect_slice_combo(self.redraw_data)
+        self.view.connect_cut_combo(self.update_cut)
+
+        self.view.connect_slice_thickness_line(self.update_slice)
+        self.view.connect_cut_thickness_line(self.update_cut)
+
+        self.view.connect_clim_combo(self.redraw_data)
+        self.view.connect_cbar_combo(self.redraw_data)
 
         self.view.connect_min_slider(self.view.update_colorbar_min)
         self.view.connect_max_slider(self.view.update_colorbar_max)
 
-        self.view.connect_slice_slider(self.update_slice)
-        self.view.connect_cut_slider(self.update_cut)
+        self.view.connect_slice_scale_combo(self.update_slice)
+        self.view.connect_cut_scale_combo(self.update_cut)
+
+        self.view.connect_slice_line(self.redraw_data)
+        self.view.connect_cut_line(self.update_cut)
+
+        self.view.connect_slice_ready(self.update_slice)
+        self.view.connect_cut_ready(self.update_cut)
+
+        self.view.connect_vol_scale_combo(self.redraw_data)
+        self.view.connect_opacity_combo(self.redraw_data)
+        self.view.connect_range_comboo(self.redraw_data)
+
+    def update_slice_value(self):
+
+        self.view.update_slice_value()
+
+        self.update_slice()
+
+    def update_cut_value(self):
+
+        self.view.update_cut_value()
+
+        self.update_cut()
 
     def update_slice(self):
 
         if self.model.is_histo_loaded():
-
-            self.view.update_slice_value()
 
             self.slice_data()
 
@@ -29,35 +55,42 @@ class VolumeSlicer(NeuXtalVizPresenter):
 
         if self.model.is_histo_loaded():
 
-            self.view.update_cut_value()
-
             self.cut_data()
 
     def load_NXS(self):
+
+        worker = self.view.worker(self.load_NXS_process)
+        worker.connect_result(self.load_NXS_complete)
+        worker.connect_finished(self.redraw_data)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def load_NXS_complete(self, result):
+
+        self.update_oriented_lattice()
+
+    def load_NXS_process(self, progress):
 
         filename = self.view.load_NXS_file_dialog()
 
         if filename:
 
-            self.update_processing()
+            progress('Processing...', 1)
 
-            self.update_processing('Loading NeXus file...', 10) 
+            progress('Loading NeXus file...', 10)
 
             self.model.load_md_histo_workspace(filename)
 
-            self.update_processing('Loading NeXus file...', 50) 
+            progress('Loading NeXus file...', 50)
 
-            self.update_oriented_lattice()
+            progress('Loading NeXus file...', 80)
 
-            self.update_processing('Loading NeXus file...', 80) 
-
-            self.redraw_data()
-
-            self.update_complete('CIF loaded!')
+            progress('NeXus file loaded!', 100)
 
         else:
 
-            self.update_invalid()
+            progress('Invalid parameters.', 0)
 
     def get_normal(self):
 
@@ -99,75 +132,77 @@ class VolumeSlicer(NeuXtalVizPresenter):
 
         return method
 
-    def get_slice_cut_indices(self):
-
-        norm = self.get_normal()
-
-        sind = norm.index(1)
-
-        axis = self.get_axis()
-
-        cind = axis.index(1)
-
-        return sind, cind
-
-    def update_slice_cut_info(self):
-
-        sind, cind = self.get_slice_cut_indices()
-
-        self.view.update_slice_limits(self.model.shape[sind],
-                                      self.model.spacing[sind],
-                                      self.model.min_lim[sind])
-
-        self.view.update_cut_limits(self.model.shape[cind],
-                                    self.model.spacing[cind],
-                                    self.model.min_lim[cind])
-
     def redraw_data(self):
+
+        worker = self.view.worker(self.redraw_data_process)
+        worker.connect_result(self.redraw_data_complete)
+        worker.connect_finished(self.slice_data)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def redraw_data_complete(self, result):
+
+        if result is not None:
+
+            histo, normal, norm, value, trans = result
+
+            self.view.add_histo(histo, normal, norm, value)
+
+            self.view.set_transform(trans)
+
+    def redraw_data_process(self, progress):
 
         if self.model.is_histo_loaded():
 
-            self.update_processing()
+            progress('Processing...', 1)
 
-            self.update_processing('Updating volume...', 20)
+            progress('Updating volume...', 20)
 
-            histo = self.model.get_histo_info()
+            norm = self.get_normal()
 
-            self.update_slice_cut_info()
+            histo = self.model.get_histo_info(norm)
 
             data = histo['signal']
 
             data = self.model.calculate_clim(data, self.get_clim_method())
 
-            self.update_processing('Updating volume...', 50)
+            progress('Updating volume...', 50)
 
             histo['signal'] = data
 
             value = self.view.get_slice_value()
 
-            norm = self.get_normal()
-
             normal = -self.model.get_normal('[uvw]', norm)
-
-            origin = norm
-            origin[origin.index(1)] = value
 
             # origin = self.model.get_normal('[hkl]', orig)
 
             if value is not None:
 
-                self.view.add_histo(histo, normal, origin)
-                self.view.set_transform(self.model.get_transform())
+                progress('Volume drawn!', 100)
 
-                self.slice_data()
-
-                self.update_complete('Volume draw!')
+                return histo, normal, norm, value, self.model.get_transform()
 
             else:
 
-                self.update_invalid()
+                progress('Invalid parameters.', 0)
 
     def slice_data(self):
+
+        worker = self.view.worker(self.slice_data_process)
+        worker.connect_result(self.slice_data_complete)
+        worker.connect_finished(self.cut_data)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def slice_data_complete(self, result):
+
+        if result is not None:
+
+            self.view.add_slice(result)
+
+    def slice_data_process(self, progress):
 
         if self.model.is_histo_loaded():
 
@@ -178,9 +213,9 @@ class VolumeSlicer(NeuXtalVizPresenter):
 
             if thick is not None:
 
-                self.update_processing()
+                progress('Processing...', 1)
 
-                self.update_processing('Updating slice...', 50)
+                progress('Updating slice...', 50)
 
                 slice_histo = self.model.get_slice_info(norm, value, thick)
 
@@ -190,13 +225,26 @@ class VolumeSlicer(NeuXtalVizPresenter):
 
                 slice_histo['signal'] = data
 
-                self.view.add_slice(slice_histo)
+                progress('Data sliced!', 100)
 
-                self.update_complete('Data sliced!')
-
-            self.cut_data()
+                return slice_histo
 
     def cut_data(self):
+
+        worker = self.view.worker(self.cut_data_process)
+        worker.connect_result(self.cut_data_complete)
+        worker.connect_finished(self.update_complete)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def cut_data_complete(self, result):
+
+        if result is not None:
+
+            self.view.add_cut(result)
+
+    def cut_data_process(self, progress):
 
         if self.model.is_sliced():
 
@@ -207,12 +255,12 @@ class VolumeSlicer(NeuXtalVizPresenter):
 
             if value is not None and thick is not None:
 
-                self.update_processing()
+                progress('Processing...', 1)
 
-                self.update_processing('Updating cut...', 50)
-    
+                progress('Updating cut...', 50)
+
+                progress('Data cut!', 100)
+
                 cut_histo = self.model.get_cut_info(axis, value, thick)
 
-                self.view.add_cut(cut_histo)
-
-                self.update_complete('Data cut!')
+                return cut_histo

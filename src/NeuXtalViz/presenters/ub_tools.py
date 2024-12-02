@@ -40,7 +40,96 @@ class UB(NeuXtalVizPresenter):
         self.switch_instrument()
         self.lattice_transform()
 
+        self.view.connect_convert_to_hkl(self.convert_to_hkl)
+
+        self.view.connect_data_combo(self.update_instrument_view)
+        self.view.connect_diffraction(self.update_roi)
+        self.view.connect_d_min(self.update_instrument_view)
+        self.view.connect_d_max(self.update_instrument_view)
+        self.view.connect_horizontal(self.update_roi)
+        self.view.connect_vertical(self.update_roi)
+        self.view.connect_horizontal_roi(self.update_roi)
+        self.view.connect_vertical_roi(self.update_roi)
+
+        self.view.connect_add_peak(self.add_peak)
+
+        self.view.connect_roi_ready(self.update_scan)
+
+        self.view.connect_h_index(self.hand_index_fractional)
+        self.view.connect_k_index(self.hand_index_fractional)
+        self.view.connect_l_index(self.hand_index_fractional)
+
+        self.view.connect_integer_h_index(self.hand_index_integer)
+        self.view.connect_integer_k_index(self.hand_index_integer)
+        self.view.connect_integer_l_index(self.hand_index_integer)
+
+        self.view.connect_integer_m_index(self.hand_index_integer)
+        self.view.connect_integer_n_index(self.hand_index_integer)
+        self.view.connect_integer_p_index(self.hand_index_integer)
+
+    def hand_index_fractional(self):
+
+        mod_info = self.get_modulation_info()
+        hkl_info = self.view.get_indices()
+        index_row = self.view.get_peak()
+
+        if mod_info is not None and hkl_info is not None:
+
+            mod_vec_1, mod_vec_2, mod_vec_3, *_ = mod_info
+            hkl, int_hkl, int_mnp = hkl_info
+
+            int_hkl, int_mnp = self.model.calculate_integer(mod_vec_1, 
+                                                            mod_vec_2,
+                                                            mod_vec_3,
+                                                            hkl)
+
+            self.model.set_peak(index_row, hkl, int_hkl, int_mnp)
+
+            self.view.update_table_index(index_row, hkl)
+
+            self.view.set_indices(hkl, int_hkl, int_mnp)
+
+    def hand_index_integer(self):
+
+        mod_info = self.get_modulation_info()
+        hkl_info = self.view.get_indices()
+        index_row = self.view.get_peak()
+
+        if mod_info is not None and hkl_info is not None:
+
+            mod_vec_1, mod_vec_2, mod_vec_3, *_ = mod_info
+            hkl, int_hkl, int_mnp = hkl_info
+
+            hkl = self.model.calculate_fractional(mod_vec_1,
+                                                  mod_vec_2,
+                                                  mod_vec_3,
+                                                  int_hkl,
+                                                  int_mnp)
+
+            self.model.set_peak(index_row, hkl, int_hkl, int_mnp)
+
+            self.view.update_table_index(index_row, hkl)
+
+            self.view.set_indices(hkl, int_hkl, int_mnp)
+
     def convert_Q(self):
+
+        worker = self.view.worker(self.convert_Q_process)
+        worker.connect_result(self.convert_Q_complete)
+        worker.connect_finished(self.visualize)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def convert_Q_complete(self, result):
+
+        if result is not None:
+
+            self.view.update_diffraction_label(result)
+
+            self.update_instrument_view()
+
+    def convert_Q_process(self, progress):
 
         instrument = self.view.get_instrument()
         wavelength = self.view.get_wavelength()
@@ -60,37 +149,150 @@ class UB(NeuXtalVizPresenter):
 
         if all(elem is not None for elem in validate):
 
-            self.update_processing()
+            mono = np.isclose(wavelength[0], wavelength[1])
 
-            self.update_processing('Data loading...', 10)
+            progress('Processing...', 1)
 
-            self.model.load_data(instrument,
-                                 IPTS,
-                                 runs,
-                                 exp,
-                                 time_stop)
+            progress('Data loading...', 10)
 
-            self.update_processing('Data loaded...', 40)
+            data_load = self.model.load_data(instrument,
+                                             IPTS,
+                                             runs,
+                                             exp,
+                                             time_stop)
 
-            self.update_processing('Data calibrating...', 50)
+            if data_load is None:
+
+                progress('Files do not exist.', 0)
+
+            progress('Data loaded...', 40)
+
+            progress('Data calibrating...', 50)
 
             self.model.calibrate_data(instrument, det_cal, tube_cal)
 
-            self.update_processing('Data calibrated...', 60)
+            progress('Data calibrated...', 60)
 
-            self.update_processing('Data converting...', 70)
+            progress('Data converting...', 70)
 
             self.model.convert_data(instrument, wavelength, lorentz)
 
-            self.update_processing('Data converted...', 99)
+            progress('Data converted...', 99)
 
-            self.visualize()
+            progress('Data converted!', 0)
 
-            self.update_complete('Data converted!')
+            return mono
 
         else:
 
-            self.update_invalid()
+            progress('Invalid parameters.', 0)
+
+    def add_peak(self):
+
+        if self.model.has_Q():
+
+            ind = self.view.get_data_combo()
+            horz = self.view.get_horizontal()
+            vert = self.view.get_vertical()
+            val = self.view.get_diffraction()
+
+            validate = [horz, vert, val]
+
+            if all(elem is not None for elem in validate):
+
+                self.model.add_peak(ind, val, horz, vert)
+
+                self.visualize()
+
+    def update_instrument_view(self):
+
+        worker = self.view.worker(self.update_instrument_view_process)
+        worker.connect_result(self.update_instrument_view_complete)
+        worker.connect_finished(self.visualize)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def update_instrument_view_complete(self, result):
+
+        if result is not None:
+
+            self.view.update_instrument_view(result[0])
+            self.view.update_roi_view(result[1])
+            self.view.update_scan_view(result[1])
+
+    def update_instrument_view_process(self, progress):
+
+        if self.model.has_Q():
+
+            ind = self.view.get_data_combo()
+            d_min = self.view.get_d_min()
+            d_max = self.view.get_d_max()
+            horz = self.view.get_horizontal()
+            vert = self.view.get_vertical()
+            horz_roi = self.view.get_horizontal_roi()
+            vert_roi = self.view.get_vertical_roi()
+            val = self.view.get_diffraction()
+
+            validate = [d_min, d_max, horz, vert, horz_roi, vert_roi, val]
+
+            if all(elem is not None for elem in validate):
+
+                progress('Processing...', 1)
+
+                progress('Detector viewing...', 10)
+
+                self.model.calculate_instrument_view(ind, d_min, d_max)
+
+                progress('Detector viewed...', 50)
+
+                self.model.extract_roi(horz, vert, horz_roi, vert_roi, val)
+
+                progress('ROI viewed...', 70)
+
+                progress('Data/ROI viewed!', 0)
+
+                return self.model.inst_view, self.model.roi_view
+
+        else:
+
+            progress('Invalid parameters.', 0)
+
+    def update_roi(self):
+
+        if self.model.has_Q():
+
+            horz = self.view.get_horizontal()
+            vert = self.view.get_vertical()
+            horz_roi = self.view.get_horizontal_roi()
+            vert_roi = self.view.get_vertical_roi()
+            val = self.view.get_diffraction()
+
+            validate = [horz, vert, horz_roi, vert_roi, val]
+
+            if all(elem is not None for elem in validate):
+
+                self.model.extract_roi(horz, vert, horz_roi, vert_roi, val)
+
+                self.view.update_roi_view(self.model.roi_view)
+
+    def update_scan(self):
+
+        if self.model.has_Q():
+
+            horz = self.view.get_horizontal()
+            vert = self.view.get_vertical()
+            horz_roi = self.view.get_horizontal_roi()
+            vert_roi = self.view.get_vertical_roi()
+            val = self.view.get_diffraction()
+
+            validate = [horz, vert, horz_roi, vert_roi, val]
+
+            if all(elem is not None for elem in validate):
+
+                self.model.extract_roi(horz, vert, horz_roi, vert_roi, val)
+
+                self.view.update_scan_view(self.model.roi_view)
 
     def visualize(self):
 
@@ -138,6 +340,19 @@ class UB(NeuXtalVizPresenter):
 
     def find_peaks(self):
 
+        worker = self.view.worker(self.find_peaks_process)
+        worker.connect_result(self.find_peaks_complete)
+        worker.connect_finished(self.visualize)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def find_peaks_complete(self, result):
+
+        self.view.clear_niggli_info()
+
+    def find_peaks_process(self, progress):
+
         if self.model.has_Q():
 
             dist = self.view.get_find_peaks_distance()
@@ -146,25 +361,34 @@ class UB(NeuXtalVizPresenter):
 
             if dist is not None and params is not None:
 
-                self.update_processing()
+                progress('Processing...', 1)
 
-                self.update_processing('Finding peaks...', 10)
+                progress('Finding peaks...', 10)
 
                 self.model.find_peaks(dist, *params, edge)
 
-                self.update_processing('Peaks found...', 90)
+                progress('Peaks found...', 90)
 
-                self.visualize()
-
-                self.view.clear_niggli_info()
-
-                self.update_complete('Peaks found!')
+                progress('Peaks found!', 100)
 
             else:
 
-                self.update_invalid()
+                progress('Invalid parameters.', 0)
 
     def find_conventional(self):
+
+        worker = self.view.worker(self.find_conventional_process)
+        worker.connect_result(self.find_conventional_complete)
+        worker.connect_finished(self.visualize)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def find_conventional_complete(self, result):
+
+        self.view.clear_niggli_info()
+
+    def find_conventional_process(self, progress):
 
         if self.model.has_peaks():
 
@@ -173,25 +397,34 @@ class UB(NeuXtalVizPresenter):
 
             if params is not None and tol is not None:
 
-                self.update_processing()
+                progress('Processing...', 1)
 
-                self.update_processing('Finding UB...', 10)
+                progress('Finding UB...', 10)
 
                 self.model.determine_UB_with_lattice_parameters(*params, tol)
 
-                self.update_processing('UB found...', 90)
+                progress('UB found...', 90)
 
-                self.visualize()
-
-                self.view.clear_niggli_info()
-
-                self.update_complete('UB found!')
+                progress('UB found!', 100)
 
             else:
 
-                self.update_invalid()
+                progress('Invalid parameters.', 0)
 
     def find_niggli(self):
+
+        worker = self.view.worker(self.find_niggli_process)
+        worker.connect_result(self.find_niggli_complete)
+        worker.connect_finished(self.visualize)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def find_niggli_complete(self, result):
+
+        self.show_cells()
+
+    def find_niggli_process(self, progress):
 
         if self.model.has_peaks():
 
@@ -200,25 +433,36 @@ class UB(NeuXtalVizPresenter):
 
             if params is not None and tol is not None:
 
-                self.update_processing()
+                progress('Processing...', 1)
 
-                self.update_processing('Finding UB...', 10)
+                progress('Finding UB...', 10)
 
                 self.model.determine_UB_with_niggli_cell(*params, tol)
 
-                self.update_processing('UB found...', 90)
+                progress('UB found...', 90)
 
-                self.visualize()
-
-                self.update_complete('UB found!')
-
-                self.show_cells()
+                progress('UB found!', 100)
 
             else:
 
-                self.update_invalid()
+                progress('Invalid parameters.', 0)
 
     def show_cells(self):
+
+        worker = self.view.worker(self.show_cells_process)
+        worker.connect_result(self.show_cells_complete)
+        worker.connect_finished(self.visualize)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def show_cells_complete(self, result):
+
+        if result is not None:
+
+            self.view.update_cell_table(result)
+
+    def show_cells_process(self, progress):
 
         if self.model.has_peaks() and self.model.has_UB():
 
@@ -226,21 +470,34 @@ class UB(NeuXtalVizPresenter):
 
             if scalar is not None:
 
-                self.update_processing()
+                progress('Processing...', 1)
 
-                self.update_processing('Finding possible cells...', 50)
+                progress('Finding possible cells...', 50)
 
                 cells = self.model.possible_conventional_cells(scalar)
 
-                self.view.update_cell_table(cells)
+                progress('Possible cells found!', 100)
 
-                self.update_complete('Possible cells found!')
+                return cells
 
             else:
 
-                self.update_invalid()
+                progress('Invalid parameters.', 0)
 
     def select_cell(self):
+
+        worker = self.view.worker(self.select_cell_process)
+        worker.connect_result(self.select_cell_complete)
+        worker.connect_finished(self.visualize)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def select_cell_complete(self, result):
+
+        self.view.clear_niggli_info()
+
+    def select_cell_process(self, progress):
 
         if self.model.has_peaks() and self.model.has_UB():
 
@@ -249,23 +506,19 @@ class UB(NeuXtalVizPresenter):
 
             if form is not None and tol is not None:
 
-                self.update_processing()
+                progress('Processing...', 1)
 
-                self.update_processing('Selecting cell...', 50)
+                progress('Selecting cell...', 50)
 
                 self.model.select_cell(form, tol)
 
-                self.update_processing('Cell selected...', 99)
+                progress('Cell selected...', 99)
 
-                self.visualize()
-
-                self.view.clear_niggli_info()
-
-                self.update_complete('Cell selected!')
+                progress('Cell selected!', 100)
 
             else:
 
-                self.update_invalid()
+                progress('Invalid parameters.', 0)
 
     def highlight_cell(self):
 
@@ -306,6 +559,19 @@ class UB(NeuXtalVizPresenter):
 
     def transform_UB(self):
 
+        worker = self.view.worker(self.transform_UB_process)
+        worker.connect_result(self.transform_UB_complete)
+        worker.connect_finished(self.visualize)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def transform_UB_complete(self, result):
+
+        self.view.clear_niggli_info()
+
+    def transform_UB_process(self, progress):
+
         if self.model.has_peaks() and self.model.has_UB():
 
             params = self.view.get_transform_matrix()
@@ -313,27 +579,36 @@ class UB(NeuXtalVizPresenter):
 
             if params is not None and tol is not None:
 
-                self.update_processing()
+                progress('Processing...', 1)
 
-                self.update_processing('Transforming UB...', 50)
+                progress('Transforming UB...', 50)
 
                 self.model.transform_lattice(params, tol)
 
-                self.update_processing('UB transformed...', 99)
+                progress('UB transformed...', 99)
 
-                self.visualize()
-
-                self.view.clear_niggli_info()
-
-                self.update_complete('UB transformed!')
+                progress('UB transformed!', 100)
 
             else:
 
-                self.update_invalid()
+                progress('Invalid parameters.', 0)
 
     def refine_UB(self):
 
-        if self.model.has_peaks() and self.model.has_UB():
+        worker = self.view.worker(self.refine_UB_process)
+        worker.connect_result(self.refine_UB_complete)
+        worker.connect_finished(self.visualize)
+        worker.connect_progress(self.update_processing)
+
+        self.view.start_worker_pool(worker)
+
+    def refine_UB_complete(self, result):
+
+        self.view.clear_niggli_info()
+
+    def refine_UB_process(self, progress):
+
+        if self.model.has_peaks():
 
             params = self.view.get_lattice_constants()
             tol = self.view.get_refine_UB_tol()
@@ -341,42 +616,34 @@ class UB(NeuXtalVizPresenter):
 
             if option == 'Constrained' and params is not None:
 
-                self.update_processing()
+                progress('Processing...', 1)
 
-                self.update_processing('Refining orientation...', 50)
+                progress('Refining orientation...', 50)
 
                 self.model.refine_U_only(*params)
 
-                self.update_processing('Orientation refined...', 99)
+                progress('Orientation refined...', 99)
 
-                self.visualize()
-
-                self.view.clear_niggli_info()
-
-                self.update_complete('Orientation refined!')
+                progress('Orientation refined!', 100)
 
             elif tol is not None:
 
-                self.update_processing()
+                progress('Processing...', 1)
 
-                self.update_processing('Refining UB...', 50)
+                progress('Refining UB...', 50)
 
                 if option == 'Unconstrained':
                     self.model.refine_UB_without_constraints(tol)
                 else:
                     self.model.refine_UB_with_constraints(option, tol)
 
-                self.update_processing('UB refined...', 99)
+                progress('UB refined...', 99)
 
-                self.visualize()
-
-                self.view.clear_niggli_info()
-
-                self.update_complete('UB refined!')
+                progress('UB refined!', 100)
 
             else:
 
-                self.update_invalid()
+                progress('Invalid parameters.', 0)
 
     def get_modulation_info(self):
 
@@ -629,3 +896,70 @@ class UB(NeuXtalVizPresenter):
         if constants is not None:
             d_phi = self.model.calculate_peaks(hkl_1, hkl_2, *constants)
             self.view.set_d_phi(*d_phi)
+
+    def get_normal(self):
+
+        slice_plane = self.view.get_slice()
+
+        if slice_plane == 'Axis 1/2':
+            norm = [0,0,1]
+        elif slice_plane == 'Axis 1/3':
+            norm = [0,1,0]
+        else:
+            norm = [1,0,0]
+
+        return norm
+
+    def get_clim_method(self):
+
+        ctype = self.view.get_clim_clip_type()
+
+        if ctype == 'μ±3×σ':
+            method = 'normal'
+        elif ctype == 'Q₃/Q₁±1.5×IQR':
+            method = 'boxplot'
+        else:
+            method = None
+
+        return method
+
+    def convert_to_hkl(self):
+
+        proj = self.view.get_projection_matrix()
+
+        value = self.view.get_slice_value()
+
+        thickness = self.view.get_slice_thickness()
+
+        width = self.view.get_slice_width()
+
+        validate = [proj, value, thickness, width]
+
+        if all(elem is not None for elem in validate):
+
+            proj = np.array(proj).reshape(3,3)
+
+            if not np.isclose(np.linalg.det(proj), 0):
+
+                U, V, W = proj
+
+                norm = self.get_normal()
+
+                slice_histo = self.model.get_slice_info(U,
+                                                        V,
+                                                        W,
+                                                        norm,
+                                                        value,
+                                                        thickness,
+                                                        width)
+
+                if slice_histo is not None:
+
+                    signal = slice_histo['signal']
+
+                    clip = self.model.calculate_clim(signal,
+                                                     self.get_clim_method())
+
+                    slice_histo['clip'] = clip
+
+                    self.view.update_slice(slice_histo)

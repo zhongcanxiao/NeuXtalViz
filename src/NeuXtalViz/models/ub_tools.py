@@ -28,6 +28,8 @@ from mantid.simpleapi import (SelectCellWithForm,
                               CombinePeaksWorkspaces,
                               CreatePeaksWorkspace,
                               ConvertPeaksWorkspace,
+                              ConvertQtoHKLMDHisto,
+                              CompactMD,
                               CopySample,
                               CreateSampleWorkspace,
                               CloneWorkspace,
@@ -36,8 +38,13 @@ from mantid.simpleapi import (SelectCellWithForm,
                               HB3AAdjustSampleNorm,
                               LoadWANDSCD,
                               Load,
+                              Rebin,
                               SetGoniometer,
                               PreprocessDetectorsToMD,
+                              GroupDetectors,
+                              GroupWorkspaces,
+                              UnGroupWorkspace,
+                              RenameWorkspace,
                               ConvertToMD,
                               ConvertHFIRSCDtoMDE,
                               LoadMD,
@@ -60,6 +67,7 @@ from mantid.geometry import PointGroupFactory, UnitCell
 from mantid.kernel import V3D
 
 import numpy as np
+import scipy
 import json
 
 from NeuXtalViz.models.base_model import NeuXtalVizModel
@@ -131,11 +139,17 @@ class UBModel(NeuXtalVizModel):
         else:
             return False
 
-    def update_UB(self):
+    def get_UB(self):
 
         if self.has_UB():
 
-            UB = mtd[self.table].sample().getOrientedLattice().getUB().copy()
+            return mtd[self.table].sample().getOrientedLattice().getUB().copy()
+
+    def update_UB(self):
+
+        UB = self.get_UB()
+
+        if UB is not None:
 
             self.set_UB(UB)
 
@@ -207,29 +221,71 @@ class UBModel(NeuXtalVizModel):
 
         filepath = self.get_raw_file_path(instrument)
 
+        inst = beamlines[instrument]
+
+        grouping = inst['Grouping']
+
         if instrument == 'DEMAND':
             filenames = [filepath.format(IPTS, exp, runs)]
             if np.all([os.path.exists(filename) for filename in filenames]):
                 HB3AAdjustSampleNorm(Filename=filenames,
                                      OutputType='Detector',
                                      NormaliseBy='None',
-                                     Grouping='4x4',
+                                     Grouping=grouping,
                                      OutputWorkspace='data')
-
+                group = mtd['data'].isGroup()
+                if not group:
+                    GroupWorkspaces(InputWorkspaces='data',
+                                    OutputWorkspace='data')
+                return True
         elif instrument == 'WAND²':
             filenames = [filepath.format(IPTS, run) for run in runs]
             if np.all([os.path.exists(filename) for filename in filenames]):
                 filenames = ','.join([filename for filename in filenames])
                 LoadWANDSCD(Filename=filenames,
-                            Grouping='4x4',
+                            Grouping=grouping,
                             OutputWorkspace='data')
+                group = mtd['data'].isGroup()
+                if not group:
+                    GroupWorkspaces(InputWorkspaces='data',
+                                    OutputWorkspace='data')
+                return True
         else:
             filenames = [filepath.format(IPTS, run) for run in runs]
             if np.all([os.path.exists(filename) for filename in filenames]):
                 filenames = ','.join([filename for filename in filenames])
                 Load(Filename=filenames,
                      FilterByTimeStop=time_stop,
+                     NumberOfBins=1,
                      OutputWorkspace='data')
+                group = mtd['data'].isGroup()
+                if not group:
+                    GroupWorkspaces(InputWorkspaces='data',
+                                    OutputWorkspace='data')
+                input_ws = mtd['data'].getNames()[0]
+                PreprocessDetectorsToMD(InputWorkspace=input_ws,
+                                        OutputWorkspace='detectors')
+                cols, rows = inst['BankPixels']
+                c, r = [int(val) for val in grouping.split('x')]
+                shape = (-1, cols, rows)
+                det_id = np.array(mtd['detectors'].column(4)).reshape(*shape)
+                det_map = np.array(mtd['detectors'].column(5)).reshape(*shape)
+                grouped_ids = {}
+                for i in range(det_id.shape[0]):
+                    for j in range(det_id.shape[1]):
+                        for k in range(det_id.shape[2]):
+                            key = (i, j // c, k // r)
+                            detector_id = str(det_map[i,j,k])
+                            if key in grouped_ids:
+                                grouped_ids[key].append(detector_id)
+                            else:
+                                grouped_ids[key] = [detector_id]
+                detector_list = ','.join(['+'.join(grouped_ids[key]) for key \
+                                          in grouped_ids.keys()])
+                GroupDetectors(InputWorkspace='data',
+                               OutputWorkspace='data',
+                               GroupingPattern=detector_list)
+                return True
 
     def calibrate_data(self, instrument, det_cal, tube_cal):
 
@@ -274,32 +330,70 @@ class UBModel(NeuXtalVizModel):
 
         if mtd.doesExist('data'):
 
+            input_ws_names = mtd['data'].getNames()
+            input_ws = input_ws_names[0]
+
+            Rs = []
+
             if 'HFIR' in filepath:
-                ei = mtd['data'].getExperimentInfo(0)
-                two_theta = ei.run().getProperty('TwoTheta').value
+
+                r = mtd[input_ws].getExperimentInfo(0).run()
+
+                two_theta = r.getProperty('TwoTheta').value
+                az_phi = r.getProperty('Azimuthal').value
+
+                for ws in input_ws_names:
+                    r = mtd[ws].getExperimentInfo(0).run()
+                    Rs.append([r.getGoniometer(i).getR()\
+                               for i in range(r.getNumGoniometers())])
+
+                lamda = wavelength[0]
+
+                counts = [np.swapaxes(mtd[ws].getSignalArray().copy(), 0, 1)\
+                          for ws in input_ws_names]
+
+                counts = [c.reshape(-1, c.shape[2]) for c in counts]
+
                 Q_max = 4*np.pi/wavelength[0]*np.sin(0.5*max(two_theta))
+
                 ConvertHFIRSCDtoMDE(InputWorkspace='data',
                                     Wavelength=wavelength[0],
                                     LorentzCorrection=lorentz,
                                     MinValues=[-Q_max,-Q_max,-Q_max],
                                     MaxValues=[+Q_max,+Q_max,+Q_max],
+                                    MaxRecursionDepth=5,
                                     OutputWorkspace='md')
-
             else:
+
                 ConvertUnits(InputWorkspace='data',
                              Target='Wavelength',
                              OutputWorkspace='data')
+
                 CropWorkspace(InputWorkspace='data',
                               XMin=wavelength[0],
                               XMax=wavelength[1],
                               OutputWorkspace='data')
-                ws = mtd['data']
-                group = ws.isGroup()
-                input_ws = ws.getNames()[0] if group else 'data'
+
+                Rebin(InputWorkspace='data',
+                      OutputWorkspace='data',
+                      Params=[wavelength[0], 0.01, wavelength[1]])
+
+                lamda = mtd[input_ws].extractX()[0]
+                lamda = 0.5*(lamda[1:]+lamda[:-1])
+
                 PreprocessDetectorsToMD(InputWorkspace=input_ws,
                                         OutputWorkspace='detectors')
+
                 two_theta = mtd['detectors'].column('TwoTheta')
+                az_phi = mtd['detectors'].column('Azimuthal')
+
+                for ws in input_ws_names:
+                    Rs.append(mtd[ws].run().getGoniometer().getR())
+
+                counts = [mtd[ws].extractY().copy() for ws in input_ws_names]
+
                 Q_max = 4*np.pi/min(wavelength)*np.sin(0.5*max(two_theta))
+
                 ConvertToMD(InputWorkspace='data',
                             QDimensions='Q3D',
                             dEAnalysisMode='Elastic',
@@ -307,20 +401,56 @@ class UBModel(NeuXtalVizModel):
                             LorentzCorrection=lorentz,
                             MinValues=[-Q_max,-Q_max,-Q_max],
                             MaxValues=[+Q_max,+Q_max,+Q_max],
+                            MaxRecursionDepth=5,
                             PreprocDetectorsWS='detectors',
                             OutputWorkspace='md')
-                if group:
-                    MergeMD(InputWorkspaces='md', OutputWorkspace='md')
+
+            input_ws_names = mtd['md'].getNames()
+            input_ws = input_ws_names[0]
+
+            if len(input_ws_names) > 1:
+
+                MergeMD(InputWorkspaces='md', OutputWorkspace='md')
+
+            else:
+
+                UnGroupWorkspace(InputWorkspace='md')
+
+                RenameWorkspace(InputWorkspace=input_ws,
+                                OutputWorkspace='md')
 
             self.Q = 'md'
 
             BinMD(InputWorkspace=self.Q,
-                  AlignedDim0='Q_sample_x,{},{},768'.format(-Q_max, Q_max),
-                  AlignedDim1='Q_sample_y,{},{},768'.format(-Q_max, Q_max),
-                  AlignedDim2='Q_sample_z,{},{},768'.format(-Q_max, Q_max),
+                  AlignedDim0='Q_sample_x,{},{},192'.format(-Q_max, Q_max),
+                  AlignedDim1='Q_sample_y,{},{},192'.format(-Q_max, Q_max),
+                  AlignedDim2='Q_sample_z,{},{},192'.format(-Q_max, Q_max),
                   OutputWorkspace='Q3D')
 
-            self.signal = mtd['Q3D'].getSignalArray().copy()
+            CreatePeaksWorkspace(InstrumentWorkspace='Q3D',
+                                 NumberOfPeaks=0,
+                                 OutputWorkspace='ub_peaks')
+
+            CompactMD(InputWorkspace='Q3D', OutputWorkspace='Q3D')
+
+            dims = [mtd['Q3D'].getDimension(i) for i in range(3)]
+
+            xmin, ymin, zmin = [dim.getMinimum() for dim in dims]
+            xmax, ymax, zmax = [dim.getMaximum() for dim in dims]
+            xn, yn, zn = [4*dim.getNBins() for dim in dims]
+
+            BinMD(InputWorkspace=self.Q,
+                  AlignedDim0='Q_sample_x,{},{},{}'.format(xmin, xmax, xn),
+                  AlignedDim1='Q_sample_y,{},{},{}'.format(ymin, ymax, yn),
+                  AlignedDim2='Q_sample_z,{},{},{}'.format(zmin, zmax, zn),
+                  OutputWorkspace='Q3D')
+
+            signal = mtd['Q3D'].getSignalArray().copy()
+
+            threshold = np.nanpercentile(signal[signal > 0], 95)
+            mask = signal >= threshold
+
+            self.signal = signal[mask]
 
             dims = [mtd['Q3D'].getDimension(i) for i in range(3)]
 
@@ -328,11 +458,300 @@ class UBModel(NeuXtalVizModel):
                                    dim.getMaximum()-dim.getBinWidth()/2,
                                    dim.getNBins()) for dim in dims]
 
+            self.Qx_min, self.Qx_max = x[0], x[-1]
+            self.Qy_min, self.Qy_max = y[0], y[-1]
+            self.Qz_min, self.Qz_max = z[0], z[-1]
+
             x, y, z = np.meshgrid(x, y, z, indexing='ij')
 
-            self.x = x
-            self.y = y
-            self.z = z
+            self.x, self.y, self.z = x[mask], y[mask], z[mask]
+
+            self.wavelength = wavelength
+            self.counts = counts
+
+            self.two_theta = np.array(two_theta)
+            self.lamda = lamda
+            self.Rs = Rs
+
+            kf_x = np.sin(two_theta)*np.cos(az_phi)
+            kf_y = np.sin(two_theta)*np.sin(az_phi)
+            kf_z = np.cos(two_theta)
+
+            self.nu = np.rad2deg(np.arcsin(kf_y))
+            self.gamma = np.rad2deg(np.arctan2(kf_x, kf_z))
+
+    def add_peak(self, ind, val, horz, vert):
+
+        R = self.Rs[ind]
+
+        if type(self.lamda) is float:
+            wl = self.lamda
+            x = np.rad2deg(np.arccos([0.5*(np.trace(r)-1) for r in R]))
+            R = R[np.argmin(np.abs(x-val))]
+        else:
+            wl = self.lamda[np.argmin(np.abs(self.lamda-val))]
+
+        k = 2*np.pi/wl
+
+        Qx = k*np.cos(np.deg2rad(vert))*np.sin(np.deg2rad(horz))
+        Qy = k*np.sin(np.deg2rad(vert))
+        Qz = k*(np.cos(np.deg2rad(vert))*np.cos(np.deg2rad(horz))-1)
+
+        mtd['ub_peaks'].run().getGoniometer().setR(R)
+        peak = mtd['ub_peaks'].createPeak([Qx, Qy, Qz])
+        mtd['ub_peaks'].addPeak(peak)
+
+    def calculate_instrument_view(self, ind, d_min, d_max):
+
+        inst_view = {}
+
+        R = self.Rs[ind]
+
+        print(np.shape(R))
+
+        if type(self.lamda) is float:
+            lamda = np.full(len(R), self.lamda)
+        else:
+            lamda = self.lamda
+
+        if np.isclose(d_min, d_max) or d_max < d_min:
+            d_min, d_max = 0, np.inf
+
+        d = 0.5*lamda/np.sin(0.5*self.two_theta[:,np.newaxis])
+        mask = (d > d_min) & (d < d_max)
+
+        rows, cols = np.nonzero(mask)
+
+        vals = self.counts[ind].copy()
+        vals[~mask] = np.nan
+
+        uni_rows = np.unique(rows)
+
+        counts = np.nansum(vals[uni_rows], axis=1)
+
+        sort = np.argsort(counts)
+
+        inst_view['d'] = d
+        inst_view['d_min'] = d_min
+        inst_view['d_max'] = d_max
+        inst_view['gamma'] = self.gamma[uni_rows][sort]
+        inst_view['nu'] = self.nu[uni_rows][sort]
+        inst_view['counts'] = counts[sort]
+        inst_view['ind'] = ind
+
+        self.inst_view = inst_view
+
+    def extract_roi(self, horz, vert, horz_roi, vert_roi, val):
+
+        inst_view = self.inst_view
+
+        roi_view = {}
+
+        d = inst_view['d']
+        d_min = inst_view['d_min']
+        d_max = inst_view['d_max']
+        gamma = inst_view['gamma']
+        nu = inst_view['nu']
+        ind = inst_view['ind']
+
+        if horz_roi == 0:
+            horz_roi = (gamma.max()-gamma.min())/2
+
+        if vert_roi == 0:
+            vert_roi = (nu.max()-nu.min())/2
+
+        if horz < gamma.min() or val > gamma.max():
+            val = (gamma.max()+gamma.min())/2
+
+        if vert < nu.min() or val > nu.max():
+            val = (nu.max()+nu.min())/2
+
+        R = self.Rs[ind]
+
+        if type(self.lamda) is float:
+            x = np.rad2deg(np.arccos([0.5*(np.trace(r)-1) for r in R]))
+            label = 'angle'
+        else:
+            x = self.lamda
+            label = 'wavelength'
+
+        mask = (d > d_min) & (d < d_max) \
+             & (self.gamma[:,np.newaxis] > horz-horz_roi) \
+             & (self.gamma[:,np.newaxis] < horz+horz_roi) \
+             & (self.nu[:,np.newaxis] > vert-vert_roi) \
+             & (self.nu[:,np.newaxis] < vert+vert_roi)
+
+        rows, cols = np.nonzero(mask)
+
+        vals = self.counts[ind]
+
+        uni_cols, inv_ind = np.unique(cols, return_inverse=True)
+
+        x = x[uni_cols]
+        y = np.bincount(inv_ind, weights=vals[mask])
+
+        if len(x) > 1:
+            if val < x.min() or val > x.max():
+                val = (x.max()+x.min())/2
+        else:
+            val = 0
+
+        roi_view['horz'] = horz
+        roi_view['vert'] = vert
+        roi_view['horz_roi'] = horz_roi
+        roi_view['vert_roi'] = vert_roi
+        roi_view['val'] = val
+        roi_view['label'] = label
+        roi_view['x'] = x
+        roi_view['y'] = y
+        roi_view['label'] = label
+
+        self.roi_view = roi_view
+
+    def get_slice_info(self, U, V, W, normal, value, thickness, width):
+
+        UB = self.get_UB()
+
+        if self.has_UB() and self.has_Q():
+
+            Wt = np.column_stack([U, V, W])
+
+            slice_dict = {}
+
+            Bp = np.dot(UB, Wt)
+
+            bp_inv = np.linalg.inv(2*np.pi*Bp)
+
+            corners = np.array([[self.Qx_min, self.Qy_min, self.Qz_min],
+                                [self.Qx_max, self.Qy_min, self.Qz_min],
+                                [self.Qx_min, self.Qy_max, self.Qz_min],
+                                [self.Qx_max, self.Qy_max, self.Qz_min],
+                                [self.Qx_min, self.Qy_min, self.Qz_max],
+                                [self.Qx_max, self.Qy_min, self.Qz_max],
+                                [self.Qx_min, self.Qy_max, self.Qz_max],
+                                [self.Qx_max, self.Qy_max, self.Qz_max]])
+
+            trans_corners = np.einsum('ij,kj->ki', bp_inv, corners)
+
+            min_values = np.ceil(np.min(trans_corners, axis=0))
+            max_values = np.floor(np.max(trans_corners, axis=0))
+
+            bin_sizes = np.round((max_values-min_values)/width).astype(int)
+
+            min_values = min_values.tolist()
+            max_values = max_values.tolist()
+
+            bin_sizes = bin_sizes.tolist()
+
+            extents = []
+            bins = []
+
+            integrate = [value-thickness, value+thickness]
+
+            for ind, i in enumerate(normal):
+                if i == 0:
+                    extents += [min_values[ind], max_values[ind]]
+                    bins += [1+bin_sizes[ind]]
+                else:
+                    extents += integrate
+                    bins += [1]
+
+            ConvertQtoHKLMDHisto(InputWorkspace=self.Q,
+                                 PeaksWorkspace=self.table,
+                                 UProj=U,
+                                 VProj=V,
+                                 WProj=W,
+                                 Extents=extents,
+                                 Bins=bins,
+                                 OutputWorkspace='slice')
+
+            CompactMD(InputWorkspace='slice', OutputWorkspace='slice')
+
+            i = np.array(normal).tolist().index(1)
+
+            form = '{} = ({:.2f},{:.2f})'
+
+            title = form.format(mtd['slice'].getDimension(i).name, *integrate)
+
+            dims = mtd['slice'].getNonIntegratedDimensions()
+
+            x, y = [np.linspace(dim.getMinimum(),
+                                dim.getMaximum(),
+                                dim.getNBoundaries()) for dim in dims]
+
+            labels = ['{} ({})'.format(dim.name,
+                                       dim.getUnits()) for dim in dims]
+
+            slice_dict['x'] = x
+            slice_dict['y'] = y
+            slice_dict['labels'] = labels
+
+            signal = mtd['slice'].getSignalArray().T.copy().squeeze()
+
+            # signal[signal <= 0] = np.nan
+            # signal[np.isinf(signal)] = np.nan
+
+            slice_dict['signal'] = signal
+
+            Q, R = scipy.linalg.qr(Bp)
+
+            ind = np.array(normal) != 1
+
+            v = scipy.linalg.cholesky(np.dot(R.T, R)[ind][:,ind], lower=False)
+
+            v /= v[0,0]
+
+            T = np.eye(3)
+            T[:2,:2] = v
+
+            s = np.diag(T).copy()
+            T[1,1] = 1
+
+            T[0,2] = -T[0,1]*y.min()
+
+            slice_dict['transform'] = T
+            slice_dict['aspect'] = s[1]
+            slice_dict['value'] = value
+            slice_dict['title'] = title
+
+            return slice_dict
+
+    def calculate_clim(self, data, method='normal'):
+
+        trans = data.copy()
+        trans[~np.isfinite(trans)] = np.nan
+
+        vmin, vmax = np.nanmin(trans), np.nanmax(trans)
+
+        if method == 'normal':
+
+            mu, sigma = np.nanmean(trans), np.nanstd(trans)
+
+            spread = 3*sigma
+
+            cmin, cmax = mu-spread, mu+spread
+
+        elif method == 'boxplot':
+
+            Q1, Q3 = np.nanpercentile(trans, [25,75])
+
+            IQR = Q3-Q1
+
+            spread = 1.5*IQR
+
+            cmin, cmax = Q1-spread, Q3+spread
+
+        else:
+
+            cmin, cmax = vmin, vmax
+
+        clim = [cmin if cmin > vmin else vmin,
+                cmax if cmax < vmax else vmax]
+
+        trans[trans < clim[0]] = clim[0]
+        trans[trans > clim[1]] = clim[1]
+
+        return trans
 
     def get_has_Q_vol(self):
 
@@ -356,13 +775,15 @@ class UBModel(NeuXtalVizModel):
 
             self.sort_peaks_by_d(self.table)
 
-            Qs, Is, pk_nos, Ts = [], [], [], []
+            Qs, Is, inds, pk_nos, Ts, rows = [], [], [], [], [], []
 
             for j, peak in enumerate(mtd[self.table]):
 
                 T = np.zeros((4,4))
 
                 I = peak.getIntensity()
+
+                ind = (peak.getHKL().norm2() > 0)*1.0
 
                 shape = eval(peak.getPeakShape().toJSON())
 
@@ -398,13 +819,17 @@ class UBModel(NeuXtalVizModel):
 
                 Qs.append(Q)
                 Is.append(I)
+                inds.append(ind)
                 pk_nos.append(pk_no)
                 Ts.append(T)
+                rows.append(j)
 
             Q_dict['coordinates'] = Qs
             Q_dict['intensities'] = Is
+            Q_dict['indexings'] = inds
             Q_dict['numbers'] = pk_nos
             Q_dict['transforms'] = Ts
+            Q_dict['rows'] = rows
 
         return Q_dict if len(Q_dict.keys()) > 0 else None
 
@@ -854,7 +1279,7 @@ class UBModel(NeuXtalVizModel):
                          UseCentroid=True,
                          MaxIterations=3,
                          ReplaceIntensity=True,
-                         IntegrateIfOnEdge=False,
+                         IntegrateIfOnEdge=True,
                          AdaptiveQBackground=False,
                          MaskEdgeTubes=False,
                          OutputWorkspace=self.table)
@@ -1298,13 +1723,66 @@ class UBModel(NeuXtalVizModel):
         if self.peak_info is not None:
             return self.peak_info[i]
 
+    def calculate_fractional(self, mod_vec_1,
+                                   mod_vec_2,
+                                   mod_vec_3,
+                                   int_hkl,
+                                   int_mnp):
+
+        if self.has_UB():
+
+            ol = mtd[self.table].sample().getOrientedLattice()
+
+            ol.setModVec1(V3D(*mod_vec_1))
+            ol.setModVec2(V3D(*mod_vec_2))
+            ol.setModVec3(V3D(*mod_vec_3))
+
+        delta_hkl = np.column_stack([mod_vec_1, mod_vec_2, mod_vec_3])
+
+        return np.array(int_hkl)+np.dot(delta_hkl, int_mnp)
+
+    def calculate_integer(self, mod_vec_1,
+                                mod_vec_2,
+                                mod_vec_3,
+                                hkl):
+
+        if self.has_UB():
+
+            ol = mtd[self.table].sample().getOrientedLattice()
+
+            ol.setModVec1(V3D(*mod_vec_1))
+            ol.setModVec2(V3D(*mod_vec_2))
+            ol.setModVec3(V3D(*mod_vec_3))
+
+        delta_hkl = np.column_stack([mod_vec_1, mod_vec_2, mod_vec_3])
+
+        bounds_m = range(-3, 4) if np.linalg.norm(mod_vec_1) > 0 else [0]
+        bounds_n = range(-3, 4) if np.linalg.norm(mod_vec_2) > 0 else [0]
+        bounds_p = range(-3, 4) if np.linalg.norm(mod_vec_3) > 0 else [0]
+
+        min_error = np.inf
+
+        for m in bounds_m:
+            for n in bounds_n:
+                for p in bounds_p:
+                    int_mnp = np.array([m, n, p])
+                    residual = np.array(hkl)-np.dot(delta_hkl, int_mnp)
+                    int_hkl = np.round(residual).astype(int)
+                    model = int_hkl+np.dot(delta_hkl, int_mnp)
+                    error = np.linalg.norm(hkl-model)
+                    if error < min_error:
+                        min_error = error
+                        best_solution = (int_hkl, int_mnp)
+
+        return best_solution
+
     def set_peak(self, i, hkl, int_hkl, int_mnp):
 
-        peak = self.table.getPeak(i)
+        peak = mtd[self.table].getPeak(i)
 
         peak.setHKL(*hkl)
-        peak.setIntHKL(V3D(*int_hkl))
-        peak.setIntMNP(V3D(*int_mnp))
+        peak.setIntHKL(V3D(*np.array(int_hkl).astype(float).tolist()))
+        peak.setIntMNP(V3D(*np.array(int_mnp).astype(float).tolist()))
 
     def calculate_peaks(self, hkl_1, hkl_2, a, b, c, alpha, beta, gamma):
 

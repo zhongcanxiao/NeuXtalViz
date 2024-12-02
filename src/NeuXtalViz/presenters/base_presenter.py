@@ -90,7 +90,8 @@ class NeuXtalVizPresenter:
         """
 
         ol = self.model.get_oriented_lattice_parameters()
-        self.view.set_oriented_lattice_parameters(*ol)
+        if ol is not None:
+            self.view.set_oriented_lattice_parameters(*ol)
 
     def change_lattice(self):
         """
